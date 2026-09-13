@@ -788,9 +788,23 @@ class ProjectModal extends ChainTimeline {
                             "review \u2014 judge the join without the " +
                             "player's boundary stutter",
                      onclick: () => this.exportMaster(true) }),
+      el("input", { class: "h3p-input h3p-prefix", placeholder: "filename prefix" }),
       el("button", { class: "h3p-btn", text: "Download to browser",
                      title: "merge and download the chain directly to your browser",
-                     onclick: () => this.downloadMaster(false) }));
+                     onclick: (e) => {
+                       // prefer immediate prefix-driven download
+                       const prefixEl = e.target.parentElement.querySelector('.h3p-prefix');
+                       const prefix = (prefixEl && prefixEl.value.trim()) || '';
+                       if (prefix) {
+                         // build a template using timestamp and send directly
+                         this._downloadPending = false;
+                         const tmpl = `${prefix}_%timestamp%.mp4`;
+                         this._startDownloadWithTemplate(tmpl);
+                       } else {
+                         // fallback to naming modal
+                         this.downloadMaster(false);
+                       }
+                     } }));
 
     this.downloadInput = el("input", { class: "h3p-input" });
     this.downloadInput.onkeydown = (e) => {
@@ -1318,6 +1332,66 @@ class ProjectModal extends ChainTimeline {
         meta.seed = m.seed || m.seed_head || m.seed;
         meta.prompt_hash = m.prompt_hash || m.promptHash || m.prompt_hash;
         meta.model = m.model || m.model_name || m.model;
+      } else if (this.state) {
+        const pend = this._downloadPending ? this.state.pending : null;
+        const src = pend || (this.state.clips && this.state.clips.slice(-1)[0]) || {};
+        const m = src.meta || {};
+        meta.seed = m.seed || m.seed_head || "";
+        meta.prompt_hash = m.prompt_hash || m.promptHash || "";
+        meta.model = m.model || m.model_name || "";
+      }
+
+      const resp = await fetch(`/h3_suite/project/download_stream`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: this.name(), include_pending: this._downloadPending,
+          filename, metadata: meta
+        })
+      });
+
+      const ct = resp.headers.get("content-type") || "";
+      if (!resp.ok) {
+        if (ct.includes("application/json")) {
+          const j = await resp.json();
+          throw new Error(j.error || JSON.stringify(j));
+        }
+        throw new Error(`download failed: ${resp.status} ${resp.statusText}`);
+      }
+
+      // stream into blob and trigger browser download
+      const reader = resp.body.getReader();
+      const chunks = [];
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        chunks.push(value);
+      }
+      const blob = new Blob(chunks, { type: "video/mp4" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+      toast("download complete");
+    } catch (e) {
+      toast(e.message || String(e), true);
+    }
+  }
+
+  async _startDownloadWithTemplate(template) {
+    const filename = template || "download_%timestamp%.mp4";
+    try {
+      // collect metadata from the last clip in the timeline (or state)
+      let meta = {};
+      if (this.timeline && this.timeline.length) {
+        const m = this.timeline[this.timeline.length - 1].clip.meta || {};
+        meta.seed = m.seed || m.seed_head || "";
+        meta.prompt_hash = m.prompt_hash || m.promptHash || "";
+        meta.model = m.model || m.model_name || "";
       } else if (this.state) {
         const pend = this._downloadPending ? this.state.pending : null;
         const src = pend || (this.state.clips && this.state.clips.slice(-1)[0]) || {};
