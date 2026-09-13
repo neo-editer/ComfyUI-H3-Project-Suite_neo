@@ -714,6 +714,47 @@ def _register():
                     f"attachment; filename={os.path.basename(real)}"
             })
 
+    @routes.post("/h3_suite/project/mirror_output")
+    @_json_post
+    def mirror_output(body):
+        """Copy an exported master into ComfyUI's output folder and
+        return a UI payload referencing it so the frontend can show it.
+
+        POST body:
+        - name: project name
+        - filename: basename of the exported master inside the project folder
+        """
+        import folder_paths as fp
+        out_dir = fp.get_output_directory()
+        p = Project(fp.get_output_directory(), body.get("name"))
+        fname = os.path.basename((body.get("filename") or "").strip())
+        if not fname:
+            raise ProjectError("h3_suite: filename required")
+        src = os.path.join(p.root, fname)
+        if not os.path.isfile(src):
+            raise ProjectError("h3_suite: exported file not found")
+        # ensure unique target
+        dst = os.path.join(out_dir, fname)
+        base, ext = os.path.splitext(fname)
+        n = 1
+        while os.path.exists(dst):
+            dst = os.path.join(out_dir, f"{base}_{n}{ext}")
+            n += 1
+        import shutil
+        shutil.copy2(src, dst)
+        # Return a ui payload similar to SaveVideo node
+        return {
+            "filename": os.path.basename(dst),
+            "path": dst,
+            "ui": {
+                "video": [
+                    {"filename": os.path.basename(dst),
+                     "subfolder": "",
+                     "type": "output"}
+                ]
+            }
+        }
+
     @routes.get("/h3_suite/project/video")
     async def video(request):
         try:

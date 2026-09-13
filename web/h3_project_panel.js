@@ -789,6 +789,9 @@ class ProjectModal extends ChainTimeline {
                             "player's boundary stutter",
                      onclick: () => this.exportMaster(true) }),
       el("input", { class: "h3p-input h3p-prefix", placeholder: "filename prefix" }),
+      el("button", { class: "h3p-btn", text: "Merge & Save",
+                     title: "concatenate approved clips and mirror to ComfyUI output folder",
+                     onclick: () => this.mergeAndSave() }),
       el("button", { class: "h3p-btn", text: "Download to browser",
                      title: "merge and download the chain directly to your browser",
                      onclick: (e) => {
@@ -1398,6 +1401,39 @@ class ProjectModal extends ChainTimeline {
       });
       const url = `/h3_suite/project/download?name=${encodeURIComponent(this.name())}&filename=${encodeURIComponent(filename)}&metadata=${encodeURIComponent(JSON.stringify(meta || {}))}`;
       window.open(url, '_blank');
+    } catch (e) {
+      toast(e.message || String(e), true);
+    }
+  }
+
+  async mergeAndSave() {
+    // Merge approved clips only and export to a file, then mirror to output
+    const prefixEl = this.exportBtns.querySelector('.h3p-prefix');
+    const prefix = (prefixEl && prefixEl.value.trim()) || null;
+    try {
+      const r = await api.fetchApi(
+        `/h3_suite/project/export_name?name=` +
+        `${encodeURIComponent(this.name())}` +
+        `&preview=0`);
+      const data = await r.json();
+      let suggested = data.suggested;
+      if (prefix) {
+        // use prefix plus timestamp
+        suggested = `${prefix}_%timestamp%.mp4`;
+      }
+      // request export to create master on disk
+      await post("/h3_suite/project/export", { name: this.name(), include_pending: false, filename: suggested });
+      // mirror into output
+      const mirror = await post("/h3_suite/project/mirror_output", { name: this.name(), filename: suggested });
+      if (mirror && mirror.ui && mirror.ui.video && mirror.ui.video[0]) {
+        const f = mirror.ui.video[0].filename;
+        toast(`saved to output: ${f}`);
+        // open the Output file URL in a new tab for convenience
+        const outUrl = `/view?filename=${encodeURIComponent(f)}&type=output`;
+        window.open(outUrl, '_blank');
+      } else {
+        toast('mirrored to output');
+      }
     } catch (e) {
       toast(e.message || String(e), true);
     }

@@ -89,6 +89,9 @@ class H3ProjectHub:
                     "tooltip": "Create the project on first run. Turn off to "
                                "make a typo fail loudly instead of quietly "
                                "starting a fresh empty project."}),
+                "filename_prefix": ("STRING", {
+                    "default": "", 
+                    "tooltip": "Optional filename prefix used by the UI when saving or downloading project masters."}),
             },
         }
 
@@ -112,7 +115,7 @@ class H3ProjectHub:
         except Exception:
             return float("NaN")
 
-    def resolve(self, project_name, create_if_missing=True):
+    def resolve(self, project_name, create_if_missing=True, filename_prefix=""):
         out_dir = folder_paths.get_output_directory()
         p = Project(out_dir, project_name, create=bool(create_if_missing))
 
