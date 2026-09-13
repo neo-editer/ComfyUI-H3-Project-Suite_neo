@@ -1341,45 +1341,34 @@ class ProjectModal extends ChainTimeline {
         meta.model = m.model || m.model_name || "";
       }
 
-      const resp = await fetch(`/h3_suite/project/download_stream`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          name: this.name(), include_pending: this._downloadPending,
-          filename, metadata: meta
-        })
-      });
-
-      const ct = resp.headers.get("content-type") || "";
-      if (!resp.ok) {
-        if (ct.includes("application/json")) {
-          const j = await resp.json();
-          throw new Error(j.error || JSON.stringify(j));
-        }
-        throw new Error(`download failed: ${resp.status} ${resp.statusText}`);
-      }
-
-      // stream into blob and trigger browser download
-      const reader = resp.body.getReader();
-      const chunks = [];
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        chunks.push(value);
-      }
-      const blob = new Blob(chunks, { type: "video/mp4" });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = filename;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      URL.revokeObjectURL(url);
-      toast("download complete");
+      // Use a form POST to open the streaming response in a new tab so
+      // the browser handles the Content-Disposition and prompts Save As.
+      const payload = {
+        name: this.name(), include_pending: this._downloadPending ? 1 : 0,
+        filename, metadata: JSON.stringify(meta || {})
+      };
+      this._submitDownloadForm(payload);
     } catch (e) {
       toast(e.message || String(e), true);
     }
+  }
+
+  _submitDownloadForm(payload) {
+    const form = document.createElement('form');
+    form.method = 'POST';
+    form.action = '/h3_suite/project/download_stream';
+    form.target = '_blank';
+    form.style.display = 'none';
+    for (const k of Object.keys(payload)) {
+      const inp = document.createElement('input');
+      inp.type = 'hidden';
+      inp.name = k;
+      inp.value = String(payload[k] == null ? '' : payload[k]);
+      form.appendChild(inp);
+    }
+    document.body.appendChild(form);
+    form.submit();
+    form.remove();
   }
 
   async _startDownloadWithTemplate(template) {
@@ -1401,42 +1390,13 @@ class ProjectModal extends ChainTimeline {
         meta.model = m.model || m.model_name || "";
       }
 
-      const resp = await fetch(`/h3_suite/project/download_stream`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          name: this.name(), include_pending: this._downloadPending,
-          filename, metadata: meta
-        })
-      });
-
-      const ct = resp.headers.get("content-type") || "";
-      if (!resp.ok) {
-        if (ct.includes("application/json")) {
-          const j = await resp.json();
-          throw new Error(j.error || JSON.stringify(j));
-        }
-        throw new Error(`download failed: ${resp.status} ${resp.statusText}`);
-      }
-
-      // stream into blob and trigger browser download
-      const reader = resp.body.getReader();
-      const chunks = [];
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        chunks.push(value);
-      }
-      const blob = new Blob(chunks, { type: "video/mp4" });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = filename;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      URL.revokeObjectURL(url);
-      toast("download complete");
+      // Submit a form to open streaming response in a new tab so the
+      // browser handles Content-Disposition directly.
+      const payload = {
+        name: this.name(), include_pending: this._downloadPending ? 1 : 0,
+        filename, metadata: JSON.stringify(meta || {})
+      };
+      this._submitDownloadForm(payload);
     } catch (e) {
       toast(e.message || String(e), true);
     }

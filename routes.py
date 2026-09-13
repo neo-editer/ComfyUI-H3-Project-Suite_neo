@@ -510,7 +510,13 @@ def _register():
         try:
             body = await request.json()
         except Exception:
-            body = {}
+            # Accept form-encoded POSTs from browser form submissions
+            try:
+                post = await request.post()
+                # convert multidict to plain dict
+                body = {k: post.get(k) for k in post}
+            except Exception:
+                body = {}
         
         try:
             p = Project(fp.get_output_directory(), body.get("name"))
@@ -575,6 +581,13 @@ def _register():
             
             # Expand filename placeholders
             metadata = body.get("metadata", {})
+            # If metadata arrived as a JSON string from a form, parse it
+            if isinstance(metadata, str):
+                try:
+                    import json as _json
+                    metadata = _json.loads(metadata)
+                except Exception:
+                    metadata = {}
             filename = _process_placeholders(body.get("filename", "download.mp4"),
                                             metadata)
             filename = _safe_export_name(filename, "download")
