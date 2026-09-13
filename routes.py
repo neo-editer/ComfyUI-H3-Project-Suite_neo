@@ -490,6 +490,151 @@ def _register():
         out["level_matched"] = matched
         return out
 
+    @routes.post("/h3_suite/project/download_stream")
+    async def download_stream(request):
+        """Merge approved (and optionally pending) clips and stream to browser.
+        
+        No file saved to disk. Merged on-the-fly and streamed directly.
+        
+        POST body:
+        - name: project name
+        - include_pending: whether to include pending clip (default false)
+        - filename: the download filename for browser (supports placeholders)
+        - metadata: dict with seed, prompt_hash, model for placeholder expansion
+        """
+        import shutil
+        import subprocess
+        import tempfile
+        import folder_paths as fp
+        
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        
+        try:
+            p = Project(fp.get_output_directory(), body.get("name"))
+        except ProjectError as exc:
+            return web.json_response({"error": str(exc)}, status=404)
+        
+        clips = list(p.approved())
+        preview = bool(body.get("include_pending")) and p.pending()
+        if preview:
+            clips.append(p.pending())
+        
+        if not clips:
+            return web.json_response(
+                {"error": "h3_suite: nothing to download."}, status=400)
+        
+        ffmpeg = shutil.which("ffmpeg")
+        if not ffmpeg:
+            return web.json_response(
+                {"error": "h3_suite: ffmpeg not found on PATH; "
+                          "install it to download merged video."},
+                status=500)
+        
+        missing = [c["basename"] for c in clips
+                   if not os.path.isfile(p.clip_video_path(c["basename"]))]
+        if missing:
+            return web.json_response(
+                {"error": "h3_suite: clip videos missing: %s"
+                          % ", ".join(missing)},
+                status=400)
+        
+        # Prepare clips with level matching
+        tmp_dir = None
+        matched = []
+        paths = [p.clip_video_path(c["basename"]) for c in clips]
+        
+        if body.get("level_match", True):
+            flagged = [i for i, c in enumerate(clips)
+                       if i > 0 and c.get("level_match")]
+            if flagged:
+                from .level_match import correct
+                tmp_dir = os.path.join(p.root, ".levelmatch_download")
+                os.makedirs(tmp_dir, exist_ok=True)
+                for i in flagged:
+                    dst = os.path.join(tmp_dir,
+                                       clips[i]["basename"] + ".mp4")
+                    try:
+                        plan = correct(paths[i - 1], paths[i], dst)
+                    except Exception as exc:
+                        _LOG.warning("h3_suite: level match failed on %s: "
+                                     "%s", clips[i]["basename"], exc)
+                        continue
+                    if plan is not None:
+                        paths[i] = dst
+                        matched.append(clips[i]["index"])
+        
+        # Build concat list
+        list_path = os.path.join(p.root, ".concat_download.txt")
+        try:
+            with open(list_path, "w", encoding="utf-8") as fh:
+                for path in paths:
+                    fh.write("file '%s'\n" % path.replace("'", "'\\''"))
+            
+            # Expand filename placeholders
+            metadata = body.get("metadata", {})
+            filename = _process_placeholders(body.get("filename", "download.mp4"),
+                                            metadata)
+            filename = _safe_export_name(filename, "download")
+            
+            # Stream directly to response via pipe
+            if matched:
+                cmd = [ffmpeg, "-y", "-f", "concat", "-safe", "0", "-i",
+                       list_path, "-c:v", "libx264", "-crf", "17",
+                       "-pix_fmt", "yuv420p", "-c:a", "aac",
+                       "-movflags", "+faststart", "-"]
+            else:
+                cmd = [ffmpeg, "-y", "-f", "concat", "-safe", "0", "-i",
+                       list_path, "-c", "copy", "-"]
+            
+            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
+                                   stderr=subprocess.PIPE)
+            
+            response = web.StreamResponse(
+                status=200,
+                headers={
+                    "Content-Type": "video/mp4",
+                    "Content-Disposition": f"attachment; filename={filename}"
+                })
+            await response.prepare(request)
+            
+            # Stream chunks from ffmpeg
+            try:
+                while True:
+                    chunk = proc.stdout.read(65536)  # 64KB chunks
+                    if not chunk:
+                        break
+                    await response.write(chunk)
+            except Exception as exc:
+                _LOG.error("h3_suite: streaming error: %s", exc)
+            finally:
+                proc.stdout.close()
+                if proc.poll() is None:
+                    proc.terminate()
+                    proc.wait(timeout=2)
+            
+            await response.write_eof()
+            return response
+        
+        except Exception as exc:
+            _LOG.exception("h3_suite: download_stream failed")
+            return web.json_response(
+                {"error": f"h3_suite: download failed: {str(exc)}"},
+                status=500)
+        finally:
+            # Cleanup temp concat file
+            if os.path.exists(list_path):
+                try:
+                    os.unlink(list_path)
+                except Exception:
+                    pass
+            # Cleanup level match temp dir
+            if tmp_dir and os.path.isdir(tmp_dir):
+                import shutil as _sh
+                _sh.rmtree(tmp_dir, ignore_errors=True)
+
     @routes.get("/h3_suite/project/download")
     async def download(request):
         """Download an exported master or preview to browser.
