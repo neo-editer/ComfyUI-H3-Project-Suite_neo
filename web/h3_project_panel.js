@@ -801,7 +801,8 @@ class ProjectModal extends ChainTimeline {
                          try {
                            this._downloadPending = false;
                            // export to create on-disk master using prefix (backend will pick a unique name)
-                           await post("/h3_suite/project/export", { name: this.name(), include_pending: false, filename: prefix });
+                          const out = await post("/h3_suite/project/export", { name: this.name(), include_pending: false, filename: prefix });
+                          const exported = out && out.master ? out.master.split('/').pop() : prefix;
                            // collect metadata as doDownload does
                            let meta = {};
                            const pend = null;
@@ -810,7 +811,7 @@ class ProjectModal extends ChainTimeline {
                            meta.seed = m.seed || m.seed_head || "";
                            meta.prompt_hash = m.prompt_hash || m.promptHash || "";
                            meta.model = m.model || m.model_name || "";
-                           const url = `/h3_suite/project/download?name=${encodeURIComponent(this.name())}&filename=${encodeURIComponent(prefix)}&metadata=${encodeURIComponent(JSON.stringify(meta || {}))}`;
+                           const url = `/h3_suite/project/download?name=${encodeURIComponent(this.name())}&filename=${encodeURIComponent(exported)}&metadata=${encodeURIComponent(JSON.stringify(meta || {}))}`;
                            window.open(url, '_blank');
                          } catch (err) { toast(err.message || String(err), true); }
                        } else {
@@ -1408,7 +1409,8 @@ class ProjectModal extends ChainTimeline {
         name: this.name(), include_pending: this._downloadPending,
         filename,
       });
-      const url = `/h3_suite/project/download?name=${encodeURIComponent(this.name())}&filename=${encodeURIComponent(filename)}&metadata=${encodeURIComponent(JSON.stringify(meta || {}))}`;
+      const exported = out && out.master ? out.master.split('/').pop() : filename;
+      const url = `/h3_suite/project/download?name=${encodeURIComponent(this.name())}&filename=${encodeURIComponent(exported)}&metadata=${encodeURIComponent(JSON.stringify(meta || {}))}`;
       window.open(url, '_blank');
     } catch (e) {
       toast(e.message || String(e), true);
@@ -1431,9 +1433,10 @@ class ProjectModal extends ChainTimeline {
         suggested = prefix;
       }
       // request export to create master on disk
-      await post("/h3_suite/project/export", { name: this.name(), include_pending: false, filename: suggested });
+      const out = await post("/h3_suite/project/export", { name: this.name(), include_pending: false, filename: suggested });
+      const exported = out && out.master ? out.master.split('/').pop() : suggested;
       // mirror into output
-      const mirror = await post("/h3_suite/project/mirror_output", { name: this.name(), filename: suggested });
+      const mirror = await post("/h3_suite/project/mirror_output", { name: this.name(), filename: exported });
       if (mirror && mirror.ui && mirror.ui.video && mirror.ui.video[0]) {
         const f = mirror.ui.video[0].filename;
         toast(`saved to output: ${f}`);
