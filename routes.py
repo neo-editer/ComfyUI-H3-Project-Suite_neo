@@ -593,14 +593,29 @@ def _register():
             filename = _safe_export_name(filename, "download")
             
             # Stream directly to response via pipe
+            # Build metadata args for ffmpeg (-metadata key=value)
+            meta_args = []
+            try:
+                for k, v in (metadata or {}).items():
+                    if v is None:
+                        continue
+                    # stringify and limit huge blobs
+                    s = str(v)
+                    if len(s) > 2 * 1024 * 1024:
+                        _LOG.warning("h3_suite: metadata key %s too large to embed", k)
+                        continue
+                    meta_args.extend(["-metadata", f"{k}={s}"])
+            except Exception:
+                pass
+
             if matched:
                 cmd = [ffmpeg, "-y", "-f", "concat", "-safe", "0", "-i",
                        list_path, "-c:v", "libx264", "-crf", "17",
                        "-pix_fmt", "yuv420p", "-c:a", "aac",
-                       "-movflags", "+faststart", "-"]
+                       "-movflags", "+faststart+use_metadata_tags"] + meta_args + ["-"]
             else:
                 cmd = [ffmpeg, "-y", "-f", "concat", "-safe", "0", "-i",
-                       list_path, "-c", "copy", "-"]
+                       list_path, "-c", "copy", "-movflags", "+faststart+use_metadata_tags"] + meta_args + ["-"]
             
             proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
                                    stderr=subprocess.PIPE)
