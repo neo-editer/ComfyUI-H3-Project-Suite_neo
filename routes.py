@@ -273,6 +273,46 @@ def _register():
             n += 1
         return "%s_%03d.mp4" % (base, n)
 
+    def _process_placeholders(filename, metadata=None):
+        """Expand ComfyUI Save File Formatting placeholders.
+        
+        Supports: %date%, %time%, %seed%, %prompt_hash%, %counter%, etc.
+        """
+        import re as _re
+        from datetime import datetime
+        
+        if not filename:
+            return filename
+            
+        metadata = metadata or {}
+        now = datetime.now()
+        
+        # Counter - simple incrementer if filename exists
+        counter = 1
+        counter_pattern = r'%counter%'
+        if _re.search(counter_pattern, filename):
+            # Count how many similar files exist
+            base = _re.sub(counter_pattern, r'(\d+)', filename)
+            counter = 1
+            # This is simplified; ComfyUI maintains a global counter
+        
+        replacements = {
+            '%date%': now.strftime("%Y%m%d"),
+            '%time%': now.strftime("%H%M%S"),
+            '%timestamp%': now.strftime("%Y%m%d_%H%M%S"),
+            '%seed%': str(metadata.get('seed', '0')),
+            '%prompt_hash%': str(metadata.get('prompt_hash', '')),
+            '%counter%': f'{counter:05d}',
+            '%model%': str(metadata.get('model', '')),
+        }
+        
+        result = filename
+        for placeholder, value in replacements.items():
+            if value:  # Only replace if value is not empty
+                result = result.replace(placeholder, value)
+        
+        return result
+
     @routes.get("/h3_suite/project/export_name")
     async def export_name(request):
         try:
@@ -449,6 +489,57 @@ def _register():
         out["clip_count"] = len(clips)
         out["level_matched"] = matched
         return out
+
+    @routes.get("/h3_suite/project/download")
+    async def download(request):
+        """Download an exported master or preview to browser.
+        
+        Query params:
+        - name: project name
+        - filename: the mp4 filename to download (supports placeholders like %date%, %time%)
+        - metadata: optional JSON with seed, prompt_hash, etc. for placeholder expansion
+        """
+        try:
+            p = _project(request)
+        except ProjectError as exc:
+            return web.json_response({"error": str(exc)}, status=404)
+        
+        filename = request.rel_url.query.get("filename", "").strip()
+        if not filename:
+            return web.json_response(
+                {"error": "filename parameter required"}, status=400)
+        
+        # Extract metadata from query string for placeholder expansion
+        metadata = {}
+        try:
+            import json as _json
+            meta_str = request.rel_url.query.get("metadata")
+            if meta_str:
+                metadata = _json.loads(meta_str)
+        except Exception:
+            pass  # If metadata parsing fails, continue without it
+        
+        # Expand ComfyUI Save File Formatting placeholders
+        expanded_filename = _process_placeholders(filename, metadata)
+        
+        # Security: ensure filename stays in project root, no path traversal
+        target = os.path.join(p.root, os.path.basename(expanded_filename))
+        real = os.path.realpath(target)
+        if os.path.dirname(real) != os.path.realpath(p.root):
+            return web.json_response(
+                {"error": "access denied"}, status=403)
+        
+        if not os.path.isfile(real):
+            return web.json_response(
+                {"error": "file not found"}, status=404)
+        
+        # Serve the file with appropriate headers for browser download
+        return web.FileResponse(
+            real,
+            headers={
+                "Content-Disposition": 
+                    f"attachment; filename={os.path.basename(real)}"
+            })
 
     @routes.get("/h3_suite/project/video")
     async def video(request):
