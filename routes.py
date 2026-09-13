@@ -454,10 +454,38 @@ def _register():
         with open(list_path, "w", encoding="utf-8") as fh:
             for path in paths:
                 fh.write("file '%s'\n" % path.replace("'", "'\\''"))
-        # no explicit name means the first FREE name, never a silent
-        # overwrite of a master someone already kept
-        default = _suggest_export(p, preview)[:-4]
-        fname = _safe_export_name(body.get("filename"), default)
+        # Expand placeholders if present and support unique prefix naming
+        metadata = body.get("metadata", {})
+        if isinstance(metadata, str):
+            try:
+                import json as _json
+                metadata = _json.loads(metadata)
+            except Exception:
+                metadata = {}
+
+        raw_name = (body.get("filename") or "").strip()
+        if raw_name:
+            # If template-like placeholders are present, expand them
+            if "%" in raw_name:
+                expanded = _process_placeholders(raw_name, metadata)
+                default = _suggest_export(p, preview)[:-4]
+                fname = _safe_export_name(expanded, default)
+            else:
+                # Treat as prefix: generate unique name base_001.mp4 style
+                base = _safe_export_name(raw_name, _suggest_export(p, preview)[:-4])[:-4]
+                candidate = base + ".mp4"
+                if not os.path.exists(os.path.join(p.root, candidate)):
+                    fname = candidate
+                else:
+                    n = 2
+                    while os.path.exists(os.path.join(p.root, f"{base}_{n:03d}.mp4")):
+                        n += 1
+                    fname = f"{base}_{n:03d}.mp4"
+        else:
+            # no explicit name means the first FREE name, never a silent
+            # overwrite of a master someone already kept
+            default = _suggest_export(p, preview)[:-4]
+            fname = _safe_export_name(None, default)
         master = os.path.join(p.root, fname)
         real = os.path.realpath(master)
         if os.path.dirname(real) != os.path.realpath(p.root):
@@ -467,14 +495,47 @@ def _register():
         # untouched clips are identical by construction and stream copy;
         # once any clip has been re-encoded for level matching the whole
         # concat has to be re-encoded so the parameters agree
+        # Attempt to embed workflow/prompt from last clip sidecar if present
+        try:
+            # pick last approved clip (or pending if preview)
+            pick = clips[-1]
+            side_path = os.path.join(p.clips_dir, pick["basename"] + ".json")
+            if os.path.isfile(side_path):
+                try:
+                    import json as _json
+                    side = _json.load(open(side_path, "r", encoding="utf-8"))
+                    # put workflow/prompt into metadata if not provided
+                    for k in ("workflow", "prompt"):
+                        if k in side and k not in metadata:
+                            metadata[k] = side[k]
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+        # Build metadata args
+        meta_args = []
+        try:
+            import json as _json
+            for k, v in (metadata or {}).items():
+                if v is None:
+                    continue
+                s = v if isinstance(v, str) else _json.dumps(v, separators=(",",":"))
+                if len(s) > 2 * 1024 * 1024:
+                    _LOG.warning("h3_suite: metadata key %s too large to embed", k)
+                    continue
+                meta_args.extend(["-metadata", f"{k}={s}"])
+        except Exception:
+            pass
+
         if matched:
             cmd = [ffmpeg, "-y", "-f", "concat", "-safe", "0", "-i",
                    list_path, "-c:v", "libx264", "-crf", "17",
                    "-pix_fmt", "yuv420p", "-c:a", "aac",
-                   "-movflags", "+faststart", master]
+                   "-movflags", "+faststart+use_metadata_tags"] + meta_args + [master]
         else:
             cmd = [ffmpeg, "-y", "-f", "concat", "-safe", "0", "-i",
-                   list_path, "-c", "copy", master]
+                   list_path, "-c", "copy", "-movflags", "+faststart+use_metadata_tags"] + meta_args + [master]
         proc = subprocess.run(cmd, capture_output=True, text=True)
         os.unlink(list_path)
         if tmp_dir and os.path.isdir(tmp_dir):

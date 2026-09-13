@@ -794,17 +794,26 @@ class ProjectModal extends ChainTimeline {
                      onclick: () => this.mergeAndSave() }),
       el("button", { class: "h3p-btn", text: "Download to browser",
                      title: "merge and download the chain directly to your browser",
-                     onclick: (e) => {
-                       // prefer immediate prefix-driven download
+                     onclick: async (e) => {
                        const prefixEl = e.target.parentElement.querySelector('.h3p-prefix');
                        const prefix = (prefixEl && prefixEl.value.trim()) || '';
                        if (prefix) {
-                         // build a template using timestamp and send directly
-                         this._downloadPending = false;
-                         const tmpl = `${prefix}_%timestamp%.mp4`;
-                         this._startDownloadWithTemplate(tmpl);
+                         try {
+                           this._downloadPending = false;
+                           // export to create on-disk master using prefix (backend will pick a unique name)
+                           await post("/h3_suite/project/export", { name: this.name(), include_pending: false, filename: prefix });
+                           // collect metadata as doDownload does
+                           let meta = {};
+                           const pend = null;
+                           const src = (this.state && this.state.clips && this.state.clips.slice(-1)[0]) || {};
+                           const m = src.meta || {};
+                           meta.seed = m.seed || m.seed_head || "";
+                           meta.prompt_hash = m.prompt_hash || m.promptHash || "";
+                           meta.model = m.model || m.model_name || "";
+                           const url = `/h3_suite/project/download?name=${encodeURIComponent(this.name())}&filename=${encodeURIComponent(prefix)}&metadata=${encodeURIComponent(JSON.stringify(meta || {}))}`;
+                           window.open(url, '_blank');
+                         } catch (err) { toast(err.message || String(err), true); }
                        } else {
-                         // fallback to naming modal
                          this.downloadMaster(false);
                        }
                      } }));
@@ -1376,7 +1385,7 @@ class ProjectModal extends ChainTimeline {
   }
 
   async _startDownloadWithTemplate(template) {
-    const filename = template || "download_%timestamp%.mp4";
+    const filename = template || "download.mp4";
     try {
       // collect metadata from the last clip in the timeline (or state)
       let meta = {};
@@ -1418,8 +1427,8 @@ class ProjectModal extends ChainTimeline {
       const data = await r.json();
       let suggested = data.suggested;
       if (prefix) {
-        // use prefix plus timestamp
-        suggested = `${prefix}_%timestamp%.mp4`;
+        // use prefix and let backend pick a unique name
+        suggested = prefix;
       }
       // request export to create master on disk
       await post("/h3_suite/project/export", { name: this.name(), include_pending: false, filename: suggested });
