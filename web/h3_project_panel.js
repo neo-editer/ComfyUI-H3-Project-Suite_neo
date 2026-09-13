@@ -1341,13 +1341,14 @@ class ProjectModal extends ChainTimeline {
         meta.model = m.model || m.model_name || "";
       }
 
-      // Use a form POST to open the streaming response in a new tab so
-      // the browser handles the Content-Disposition and prompts Save As.
-      const payload = {
-        name: this.name(), include_pending: this._downloadPending ? 1 : 0,
-        filename, metadata: JSON.stringify(meta || {})
-      };
-      this._submitDownloadForm(payload);
+      // Call export to produce an on-disk master, then open the download URL
+      const out = await post("/h3_suite/project/export", {
+        name: this.name(), include_pending: this._downloadPending,
+        filename,
+      });
+      // open the GET download which returns a FileResponse and prompts Save As
+      const url = `/h3_suite/project/download?name=${encodeURIComponent(this.name())}&filename=${encodeURIComponent(filename)}&metadata=${encodeURIComponent(JSON.stringify(meta || {}))}`;
+      window.open(url, '_blank');
     } catch (e) {
       toast(e.message || String(e), true);
     }
@@ -1390,13 +1391,13 @@ class ProjectModal extends ChainTimeline {
         meta.model = m.model || m.model_name || "";
       }
 
-      // Submit a form to open streaming response in a new tab so the
-      // browser handles Content-Disposition directly.
-      const payload = {
-        name: this.name(), include_pending: this._downloadPending ? 1 : 0,
-        filename, metadata: JSON.stringify(meta || {})
-      };
-      this._submitDownloadForm(payload);
+      // Call export to create a temporary master file on disk first
+      const out = await post("/h3_suite/project/export", {
+        name: this.name(), include_pending: this._downloadPending,
+        filename,
+      });
+      const url = `/h3_suite/project/download?name=${encodeURIComponent(this.name())}&filename=${encodeURIComponent(filename)}&metadata=${encodeURIComponent(JSON.stringify(meta || {}))}`;
+      window.open(url, '_blank');
     } catch (e) {
       toast(e.message || String(e), true);
     }
