@@ -787,7 +787,29 @@ class ProjectModal extends ChainTimeline {
                      title: "seamless concat including the clip awaiting " +
                             "review \u2014 judge the join without the " +
                             "player's boundary stutter",
-                     onclick: () => this.exportMaster(true) }));
+                     onclick: () => this.exportMaster(true) }),
+      el("button", { class: "h3p-btn", text: "Download to browser",
+                     title: "merge and download the chain directly to your browser",
+                     onclick: () => this.downloadMaster(false) }));
+
+    this.downloadInput = el("input", { class: "h3p-input" });
+    this.downloadInput.onkeydown = (e) => {
+      if (e.key === "Enter") this.doDownload();
+      if (e.key === "Escape") this.closeDownloadNaming();
+      e.stopPropagation();
+    };
+
+    this.downloadNaming = el("div", { class: "h3p-inline",
+                                      style: "display:none" },
+      el("span", { class: "h3p-takelabel", text: "save as" }),
+      this.downloadInput,
+      el("button", { class: "h3p-btn ok", text: "Download",
+                     onclick: () => this.doDownload() }),
+      el("button", { class: "h3p-btn", text: "Cancel",
+                     onclick: () => this.closeDownloadNaming() }));
+
+    this.downloadHints = el("div", { class: "h3p-hints", style: "display:none; font-size:0.9em; color:#888;" },
+      el("span", { text: "Placeholders: %date%, %time%, %timestamp%, %seed%, %prompt_hash%, %model%" }));
     this.exportNaming = el("div", { class: "h3p-inline",
                                     style: "display:none" },
       el("span", { class: "h3p-takelabel", text: "save as" }),
@@ -797,7 +819,7 @@ class ProjectModal extends ChainTimeline {
       el("button", { class: "h3p-btn", text: "Cancel",
                      onclick: () => this.closeExportNaming() }));
     this.exportRow = el("div", { class: "h3p-exportrow" },
-      this.exportBtns, this.exportNaming);
+      this.exportBtns, this.exportNaming, this.downloadNaming, this.downloadHints);
 
     this.actions = el("div", { class: "h3p-actions" });
     this.railBody = el("div", { class: "h3p-railbody" });
@@ -1255,6 +1277,95 @@ class ProjectModal extends ChainTimeline {
             `(${out.clip_count} clips${lm ? `, ${lm} join` +
             `${lm === 1 ? "" : "s"} level-matched` : ""}): ${out.master}`);
     } catch (e) { toast(e.message, true); }
+  }
+
+  async downloadMaster(includePending) {
+    this._downloadPending = !!includePending;
+    try {
+      const r = await api.fetchApi(
+        `/h3_suite/project/export_name?name=` +
+        `${encodeURIComponent(this.name())}` +
+        `&preview=${includePending ? 1 : 0}`);
+      const { suggested, error } = await r.json();
+      if (error) throw new Error(error);
+      this.downloadInput.value = suggested;
+    } catch (e) {
+      this.downloadInput.value = includePending ? "preview.mp4" : "download.mp4";
+    }
+    this.exportBtns.style.display = "none";
+    this.downloadNaming.style.display = "flex";
+    this.downloadHints.style.display = "block";
+    this.downloadInput.focus();
+    this.downloadInput.select();
+  }
+
+  closeDownloadNaming() {
+    this.downloadNaming.style.display = "none";
+    this.downloadHints.style.display = "none";
+    this.exportBtns.style.display = "flex";
+  }
+
+  async doDownload() {
+    const filename = this.downloadInput.value.trim();
+    if (!filename) return;
+    this.closeDownloadNaming();
+    toast("preparing download…");
+    try {
+      // collect metadata from the last clip in the timeline (or state)
+      let meta = {};
+      if (this.timeline && this.timeline.length) {
+        const m = this.timeline[this.timeline.length - 1].clip.meta || {};
+        meta.seed = m.seed || m.seed_head || m.seed;
+        meta.prompt_hash = m.prompt_hash || m.promptHash || m.prompt_hash;
+        meta.model = m.model || m.model_name || m.model;
+      } else if (this.state) {
+        const pend = this._downloadPending ? this.state.pending : null;
+        const src = pend || (this.state.clips && this.state.clips.slice(-1)[0]) || {};
+        const m = src.meta || {};
+        meta.seed = m.seed || m.seed_head || "";
+        meta.prompt_hash = m.prompt_hash || m.promptHash || "";
+        meta.model = m.model || m.model_name || "";
+      }
+
+      const resp = await fetch(`/h3_suite/project/download_stream`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: this.name(), include_pending: this._downloadPending,
+          filename, metadata: meta
+        })
+      });
+
+      const ct = resp.headers.get("content-type") || "";
+      if (!resp.ok) {
+        if (ct.includes("application/json")) {
+          const j = await resp.json();
+          throw new Error(j.error || JSON.stringify(j));
+        }
+        throw new Error(`download failed: ${resp.status} ${resp.statusText}`);
+      }
+
+      // stream into blob and trigger browser download
+      const reader = resp.body.getReader();
+      const chunks = [];
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        chunks.push(value);
+      }
+      const blob = new Blob(chunks, { type: "video/mp4" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+      toast("download complete");
+    } catch (e) {
+      toast(e.message || String(e), true);
+    }
   }
 
   async openFolder() {
