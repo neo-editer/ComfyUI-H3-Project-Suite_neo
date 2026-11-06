@@ -772,20 +772,8 @@ class ProjectModal extends ChainTimeline {
     this.takeWrap = el("div", { class: "h3p-takes" },
       el("span", { class: "h3p-takelabel", text: "take" }), this.takeSel);
 
-    // One prefix for every action, and no second naming field: the field
-    // is ComfyUI's filename_prefix, so a run counter and .mp4 are appended
-    // and %date%/%time%/%width% expand. Every button reads it at click
-    // time; none of them asks again for the same thing.
-    this.prefixInput = el("input", {
-      class: "h3p-input",
-      style: "width:220px",
-      placeholder: "filename_prefix",
-      title: "ComfyUI filename prefix - a counter and .mp4 are appended. " +
-             "Placeholders: %date%, %time%, %timestamp%, %project%, " +
-             "%clips%, %hash%, %seed%, %prompt_hash%, %width%, %height%, " +
-             "%year%, %month%, %day%, %hour%, %minute%, %second%",
-    });
-    this.prefixInput.onkeydown = (e) => e.stopPropagation();
+    // No naming field in here: the prefix is the node's own
+    // filename_prefix widget, and every button reads it at click time.
     this.exportBtns = el("div", { class: "h3p-inline" },
       el("button", { class: "h3p-btn", text: "Export master",
                      title: "concatenate the approved clips into the " +
@@ -796,7 +784,6 @@ class ProjectModal extends ChainTimeline {
                             "review \u2014 judge the join without the " +
                             "player's boundary stutter",
                      onclick: () => this.exportMaster(true) }),
-      this.prefixInput,
       el("button", { class: "h3p-btn", text: "Merge & Save",
                      title: "concatenate approved clips and mirror to " +
                             "ComfyUI output folder",
@@ -1223,10 +1210,12 @@ class ProjectModal extends ChainTimeline {
       });
   }
 
-  // The one name every button uses. Empty means "let the server pick the
-  // project's default prefix" - the field is never a hidden second step.
+  // The node's filename_prefix widget is the one name every button uses -
+  // there is deliberately no second field inside this modal. Empty means
+  // "let the server pick the project's default prefix".
   _prefix() {
-    return (this.prefixInput && this.prefixInput.value.trim()) || "";
+    const w = this.node.widgets?.find((w2) => w2.name === "filename_prefix");
+    return (w?.value || "").trim();
   }
 
   async exportMaster(includePending) {

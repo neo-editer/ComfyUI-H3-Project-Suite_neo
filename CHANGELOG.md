@@ -2,11 +2,12 @@
 
 ## 1.3.1
 
-### One filename_prefix, used by every button
+### One filename_prefix, on the node, used by every button
 
-The field is ComfyUI's `filename_prefix`, so it behaves like the one on
-SaveImage: the placeholders expand, a run counter and `.mp4` are appended,
-and the first free number wins, so two exports never overwrite each other.
+The naming field is the node's own `filename_prefix` widget - the modal no
+longer carries a copy of it. It behaves like the one on SaveImage: the
+placeholders expand, a run counter and `.mp4` are appended, and the first
+free number wins, so two exports never overwrite each other.
 `%date%`, `%time%`, `%timestamp%`, `%project%`, `%clips%`, `%hash%`,
 `%seed%`, `%prompt_hash%` work, plus the tokens ComfyUI's own save nodes
 expand (`%year%`, `%month%`, `%day%`, `%hour%`, `%minute%`, `%second%`,
@@ -15,10 +16,9 @@ leaking a stray `%`, and non-ASCII names survive instead of collapsing to
 the fallback.
 
 Export master, Export + pending, Merge & Save and Download to browser all
-read that one field at click time and run immediately. The "save as" row
-they used to pop up is gone - it asked for the same name a second time,
-and typing a prefix there produced `prefix.mp4` instead of
-`prefix_00001.mp4`.
+read that widget at click time and run immediately. The "save as" row they
+used to pop up is gone - it asked for the same name a second time, and
+typing a prefix there produced `prefix.mp4` instead of `prefix_00001.mp4`.
 
 ### Download to browser streams instead of exporting first
 

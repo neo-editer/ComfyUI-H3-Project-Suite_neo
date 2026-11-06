@@ -90,8 +90,12 @@ class H3ProjectHub:
                                "make a typo fail loudly instead of quietly "
                                "starting a fresh empty project."}),
                 "filename_prefix": ("STRING", {
-                    "default": "", 
-                    "tooltip": "Optional filename prefix used by the UI when saving or downloading project masters."}),
+                    "default": "",
+                    "tooltip": "Filename prefix for Export master, Export + "
+                               "pending, Merge & Save and Download to browser. "
+                               "ComfyUI rules apply: placeholders expand and a "
+                               "run counter plus .mp4 are appended "
+                               "(my_%date% -> my_20260105_00001.mp4)."}),
             },
         }
 
