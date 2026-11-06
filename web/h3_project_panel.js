@@ -205,6 +205,18 @@ function toast(msg, bad = false) {
   setTimeout(() => t.remove(), bad ? 5200 : 2600);
 }
 
+// The server sends both a quoted filename and the RFC 5987 form; prefer
+// the encoded one so the saved name matches what the panel asked for.
+function filenameFromDisposition(cd) {
+  if (!cd) return "";
+  const star = /filename\*=UTF-8''([^;]+)/i.exec(cd);
+  if (star) {
+    try { return decodeURIComponent(star[1]); } catch (e) { /* fall */ }
+  }
+  const plain = /filename="?([^";]+)"?/i.exec(cd);
+  return plain ? plain[1] : "";
+}
+
 async function post(path, body) {
   const r = await api.fetchApi(path, {
     method: "POST", headers: { "Content-Type": "application/json" },
@@ -1232,10 +1244,10 @@ class ProjectModal extends ChainTimeline {
     } catch (e) { toast(e.message, true); }
   }
 
-  // Direct: the prefix field above is the whole name, no second prompt.
-  // The form is submitted inside the click gesture through a hidden
-  // iframe, so no popup blocker and no navigation away from the panel.
-  downloadMaster(includePending) {
+  // Download runs through fetch, not a form posted at a hidden iframe: an
+  // iframe swallows the server's error response, which is exactly how
+  // "merging…" could sit there forever with no file and no message.
+  async downloadMaster(includePending) {
     this._downloadPending = !!includePending;
     const payload = {
       name: this.name(),
@@ -1245,22 +1257,54 @@ class ProjectModal extends ChainTimeline {
       metadata: JSON.stringify(this._downloadMetadata()),
     };
     const path = "/h3_suite/project/download_stream";
-    const form = document.createElement("form");
-    form.method = "POST";
-    form.action = api.apiURL ? api.apiURL(path) : path;
-    form.target = this._downloadTarget();
-    form.style.display = "none";
-    for (const k of Object.keys(payload)) {
-      const inp = document.createElement("input");
-      inp.type = "hidden";
-      inp.name = k;
-      inp.value = String(payload[k] == null ? "" : payload[k]);
-      form.appendChild(inp);
+    const url = api.apiURL ? api.apiURL(path) : path;
+    const note = el("div", { class: "h3p-toast", text: "merging\u2026" });
+    document.body.append(note);
+    try {
+      const form = new FormData();
+      for (const k of Object.keys(payload)) {
+        form.append(k, String(payload[k] == null ? "" : payload[k]));
+      }
+      const res = await fetch(url, { method: "POST", body: form });
+      const type = res.headers.get("Content-Type") || "";
+      if (!res.ok || type.includes("application/json")) {
+        let msg = `${res.status} ${res.statusText}`;
+        try { msg = (await res.json()).error || msg; } catch (e) { /* keep */ }
+        throw new Error(msg);
+      }
+      const total = Number(res.headers.get("Content-Length")) || 0;
+      const name = filenameFromDisposition(
+        res.headers.get("Content-Disposition")) || "h3_download.mp4";
+      const chunks = [];
+      let got = 0;
+      if (res.body && res.body.getReader) {
+        const reader = res.body.getReader();
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          chunks.push(value);
+          got += value.length;
+          const mb = Math.round(got / 1048576);
+          note.textContent = total
+            ? `downloading\u2026 ${mb} / ${Math.round(total / 1048576)} MB`
+            : `downloading\u2026 ${mb} MB`;
+        }
+      }
+      const blob = chunks.length
+        ? new Blob(chunks, { type: "video/mp4" })
+        : await res.blob();
+      const href = URL.createObjectURL(blob);
+      const a = el("a", { href, download: name, style: "display:none" });
+      document.body.append(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(href), 60000);
+      note.remove();
+      toast(`saved ${name}`);
+    } catch (e) {
+      note.remove();
+      toast(e.message || String(e), true);
     }
-    document.body.append(form);
-    form.submit();
-    form.remove();
-    toast("merging and downloading…");
   }
 
   // Metadata the panel has but the server cannot guess. Computed
@@ -1280,17 +1324,6 @@ class ProjectModal extends ChainTimeline {
       prompt_hash: m.prompt_hash || m.promptHash || "",
       model: m.model || m.model_name || "",
     };
-  }
-
-  // A hidden iframe is the form target: the download starts without a
-  // popup blocker getting in the way and without leaving the panel.
-  _downloadTarget() {
-    if (!this._dlFrame || !this._dlFrame.isConnected) {
-      this._dlFrame = el("iframe", { name: "h3p_dl_target",
-                                     style: "display:none" });
-      document.body.append(this._dlFrame);
-    }
-    return "h3p_dl_target";
   }
 
   async mergeAndSave() {

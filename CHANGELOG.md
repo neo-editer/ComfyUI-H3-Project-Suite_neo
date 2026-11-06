@@ -20,6 +20,18 @@ read that widget at click time and run immediately. The "save as" row they
 used to pop up is gone - it asked for the same name a second time, and
 typing a prefix there produced `prefix.mp4` instead of `prefix_00001.mp4`.
 
+### Download to browser actually produces a file
+
+The merge was piped into stdout with `-movflags +faststart`, which ffmpeg
+cannot do: `-` gives it no output format to pick, and faststart has to seek
+back to rewrite the header. Both fail before the first byte, so the panel
+sat on "merging…" forever and nothing was ever saved. The merge now goes
+to the throwaway temp dir as a normal seekable faststart mp4 and is sent
+from there with a real `Content-Length`, which also gives the panel a
+progress readout. The panel fetches the response and saves it through an
+anchor, so a server-side failure arrives as an error toast instead of
+vanishing into a hidden iframe.
+
 ### Download to browser streams instead of exporting first
 
 The template used to be expanded twice: once by `/export` (without

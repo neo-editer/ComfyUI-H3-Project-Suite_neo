@@ -589,9 +589,11 @@ def _register():
 
     @routes.post("/h3_suite/project/download_stream")
     async def download_stream(request):
-        """Merge approved (and optionally pending) clips and stream to browser.
-        
-        No file saved to disk. Merged on-the-fly and streamed directly.
+        """Merge approved (and optionally pending) clips and send them.
+
+        The merge goes to a throwaway temp dir, never the project folder,
+        and is deleted with the response - which is what makes this usable
+        on a deployment whose output folder the user cannot reach.
         
         POST body:
         - name: project name
@@ -715,28 +717,30 @@ def _register():
             except Exception:
                 pass
 
+            # mp4 cannot be muxed to a pipe: "-" gives ffmpeg no output
+            # format to pick, and +faststart needs to seek back to rewrite
+            # the header. Both fail before a single byte is produced. So
+            # write the master into the throwaway temp dir - a normal,
+            # seekable, faststart file - and send that. Same bytes as
+            # Export master, and Content-Length gives the panel a bar.
+            out_path = os.path.join(tmp_dir, "merged.mp4")
             quiet = ["-nostats", "-loglevel", "error"]
             if matched:
                 cmd = [ffmpeg, "-y", "-f", "concat", "-safe", "0", "-i",
                        list_path, "-c:v", "libx264", "-crf", "17",
                        "-pix_fmt", "yuv420p", "-c:a", "aac",
-                       "-movflags", "+faststart+use_metadata_tags"] + meta_args + quiet + ["-"]
+                       "-movflags", "+faststart+use_metadata_tags"] + meta_args + quiet + [out_path]
             else:
                 cmd = [ffmpeg, "-y", "-f", "concat", "-safe", "0", "-i",
-                       list_path, "-c", "copy", "-movflags", "+faststart+use_metadata_tags"] + meta_args + quiet + ["-"]
-            
+                       list_path, "-c", "copy", "-movflags", "+faststart+use_metadata_tags"] + meta_args + quiet + [out_path]
+
             proc = await asyncio.create_subprocess_exec(
-                *cmd, stdout=asyncio.subprocess.PIPE,
+                *cmd, stdout=asyncio.subprocess.DEVNULL,
                 stderr=asyncio.subprocess.PIPE)
-            # ffmpeg blocks forever once its stderr pipe fills, so drain it
-            # in the background and keep the text for the error path
-            err_task = asyncio.ensure_future(proc.stderr.read())
-            
-            # a broken encode must surface as JSON, not as a zero-byte 200
-            # that the browser cheerfully saves
-            first = await proc.stdout.read(65536)
-            if not first:
-                stderr = (await err_task).decode("utf-8", "replace")
+            stderr = (await proc.stderr.read()).decode("utf-8", "replace")
+            if await proc.wait() != 0 or not os.path.isfile(out_path):
+                # a broken encode must surface as JSON, not as a zero-byte
+                # 200 that the browser cheerfully saves
                 return web.json_response(
                     {"error": "h3_suite: ffmpeg concat failed: %s"
                               % (stderr.strip()[-400:] or "no output")},
@@ -746,31 +750,28 @@ def _register():
                 status=200,
                 headers={
                     "Content-Type": "video/mp4",
+                    "Content-Length": str(os.path.getsize(out_path)),
                     "Content-Disposition": _attachment(filename),
                     "Cache-Control": "no-store",
                     "X-Content-Type-Options": "nosniff",
                 })
             await response.prepare(request)
-            
-            # Stream chunks from ffmpeg
+
+            # read off the loop: a blocking read here would stall every
+            # other request ComfyUI is serving
+            loop = asyncio.get_running_loop()
             try:
-                chunk = first
-                while chunk:
-                    await response.write(chunk)
-                    chunk = await proc.stdout.read(65536)
+                with open(out_path, "rb") as fh:
+                    while True:
+                        chunk = await loop.run_in_executor(
+                            None, fh.read, 1 << 20)
+                        if not chunk:
+                            break
+                        await response.write(chunk)
             except (ConnectionResetError, asyncio.CancelledError):
                 _LOG.info("h3_suite: client aborted download of %s", filename)
                 return response
-            finally:
-                if proc.returncode is None:
-                    try:
-                        proc.kill()
-                    except ProcessLookupError:
-                        pass
-                await proc.wait()
-                if not err_task.done():
-                    err_task.cancel()
-            
+
             await response.write_eof()
             return response
         
