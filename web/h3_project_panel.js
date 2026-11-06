@@ -772,81 +772,40 @@ class ProjectModal extends ChainTimeline {
     this.takeWrap = el("div", { class: "h3p-takes" },
       el("span", { class: "h3p-takelabel", text: "take" }), this.takeSel);
 
-    this.exportInput = el("input", { class: "h3p-input" });
-    this.exportInput.onkeydown = (e) => {
-      if (e.key === "Enter") this.doExport();
-      if (e.key === "Escape") this.closeExportNaming();
-      e.stopPropagation();
-    };
-    // one fixed row: buttons by default, the name field in their place
-    // while naming. Same height either way, so nothing below it moves.
+    // One prefix for every action, and no second naming field: the field
+    // is ComfyUI's filename_prefix, so a run counter and .mp4 are appended
+    // and %date%/%time%/%width% expand. Every button reads it at click
+    // time; none of them asks again for the same thing.
+    this.prefixInput = el("input", {
+      class: "h3p-input",
+      style: "width:220px",
+      placeholder: "filename_prefix",
+      title: "ComfyUI filename prefix - a counter and .mp4 are appended. " +
+             "Placeholders: %date%, %time%, %timestamp%, %project%, " +
+             "%clips%, %hash%, %seed%, %prompt_hash%, %width%, %height%, " +
+             "%year%, %month%, %day%, %hour%, %minute%, %second%",
+    });
+    this.prefixInput.onkeydown = (e) => e.stopPropagation();
     this.exportBtns = el("div", { class: "h3p-inline" },
       el("button", { class: "h3p-btn", text: "Export master",
+                     title: "concatenate the approved clips into the " +
+                            "project folder",
                      onclick: () => this.exportMaster(false) }),
       el("button", { class: "h3p-btn", text: "Export + pending",
                      title: "seamless concat including the clip awaiting " +
                             "review \u2014 judge the join without the " +
                             "player's boundary stutter",
                      onclick: () => this.exportMaster(true) }),
-      el("input", { class: "h3p-input h3p-prefix", placeholder: "filename prefix" }),
+      this.prefixInput,
       el("button", { class: "h3p-btn", text: "Merge & Save",
-                     title: "concatenate approved clips and mirror to ComfyUI output folder",
+                     title: "concatenate approved clips and mirror to " +
+                            "ComfyUI output folder",
                      onclick: () => this.mergeAndSave() }),
       el("button", { class: "h3p-btn", text: "Download to browser",
-                     title: "merge and download the chain directly to your browser",
-                     onclick: async (e) => {
-                       const prefixEl = e.target.parentElement.querySelector('.h3p-prefix');
-                       const prefix = (prefixEl && prefixEl.value.trim()) || '';
-                       if (prefix) {
-                         try {
-                           this._downloadPending = false;
-                           // export to create on-disk master using prefix (backend will pick a unique name)
-                          const out = await post("/h3_suite/project/export", { name: this.name(), include_pending: false, filename: prefix });
-                          const exported = out && out.master ? out.master.split('/').pop() : prefix;
-                           // collect metadata as doDownload does
-                           let meta = {};
-                           const pend = null;
-                           const src = (this.state && this.state.clips && this.state.clips.slice(-1)[0]) || {};
-                           const m = src.meta || {};
-                           meta.seed = m.seed || m.seed_head || "";
-                           meta.prompt_hash = m.prompt_hash || m.promptHash || "";
-                           meta.model = m.model || m.model_name || "";
-                           const url = `/h3_suite/project/download?name=${encodeURIComponent(this.name())}&filename=${encodeURIComponent(exported)}&metadata=${encodeURIComponent(JSON.stringify(meta || {}))}`;
-                           window.open(url, '_blank');
-                         } catch (err) { toast(err.message || String(err), true); }
-                       } else {
-                         this.downloadMaster(false);
-                       }
-                     } }));
-
-    this.downloadInput = el("input", { class: "h3p-input" });
-    this.downloadInput.onkeydown = (e) => {
-      if (e.key === "Enter") this.doDownload();
-      if (e.key === "Escape") this.closeDownloadNaming();
-      e.stopPropagation();
-    };
-
-    this.downloadNaming = el("div", { class: "h3p-inline",
-                                      style: "display:none" },
-      el("span", { class: "h3p-takelabel", text: "save as" }),
-      this.downloadInput,
-      el("button", { class: "h3p-btn ok", text: "Download",
-                     onclick: () => this.doDownload() }),
-      el("button", { class: "h3p-btn", text: "Cancel",
-                     onclick: () => this.closeDownloadNaming() }));
-
-    this.downloadHints = el("div", { class: "h3p-hints", style: "display:none; font-size:0.9em; color:#888;" },
-      el("span", { text: "Placeholders: %date%, %time%, %timestamp%, %seed%, %prompt_hash%, %model%" }));
-    this.exportNaming = el("div", { class: "h3p-inline",
-                                    style: "display:none" },
-      el("span", { class: "h3p-takelabel", text: "save as" }),
-      this.exportInput,
-      el("button", { class: "h3p-btn ok", text: "Write",
-                     onclick: () => this.doExport() }),
-      el("button", { class: "h3p-btn", text: "Cancel",
-                     onclick: () => this.closeExportNaming() }));
-    this.exportRow = el("div", { class: "h3p-exportrow" },
-      this.exportBtns, this.exportNaming, this.downloadNaming, this.downloadHints);
+                     title: "merge and stream the chain straight to your " +
+                            "browser - nothing is written to the project folder",
+                     onclick: () => this.downloadMaster(false) }));
+    this.exportRow = el("div", { class: "h3p-exportrow" }, this.exportBtns);
 
     this.actions = el("div", { class: "h3p-actions" });
     this.railBody = el("div", { class: "h3p-railbody" });
@@ -1015,7 +974,6 @@ class ProjectModal extends ChainTimeline {
     this.setName(this.select.value);
     this.viewing = null;
     this.hideConfirm();
-    this.closeExportNaming();
     this.refresh(true);
   }
 
@@ -1265,39 +1223,18 @@ class ProjectModal extends ChainTimeline {
       });
   }
 
+  // The one name every button uses. Empty means "let the server pick the
+  // project's default prefix" - the field is never a hidden second step.
+  _prefix() {
+    return (this.prefixInput && this.prefixInput.value.trim()) || "";
+  }
+
   async exportMaster(includePending) {
-    this._exportPending = !!includePending;
-    try {
-      const r = await api.fetchApi(
-        `/h3_suite/project/export_name?name=` +
-        `${encodeURIComponent(this.name())}` +
-        `&preview=${includePending ? 1 : 0}`);
-      const { suggested, error } = await r.json();
-      if (error) throw new Error(error);
-      this.exportInput.value = suggested;
-    } catch (e) {
-      this.exportInput.value = includePending ? "preview.mp4" : "master.mp4";
-    }
-    this.exportBtns.style.display = "none";
-    this.exportNaming.style.display = "flex";
-    this.exportInput.focus();
-    this.exportInput.select();
-  }
-
-  closeExportNaming() {
-    this.exportNaming.style.display = "none";
-    this.exportBtns.style.display = "flex";
-  }
-
-  async doExport() {
-    const filename = this.exportInput.value.trim();
-    if (!filename) return;
-    this.closeExportNaming();
     toast("concatenating\u2026");
     try {
       const out = await post("/h3_suite/project/export", {
-        name: this.name(), include_pending: this._exportPending,
-        filename,
+        name: this.name(), include_pending: !!includePending,
+        filename: this._prefix(),
       });
       const lm = (out.level_matched || []).length;
       toast(`${out.preview ? "preview" : "master"} written ` +
@@ -1306,143 +1243,83 @@ class ProjectModal extends ChainTimeline {
     } catch (e) { toast(e.message, true); }
   }
 
-  async downloadMaster(includePending) {
+  // Direct: the prefix field above is the whole name, no second prompt.
+  // The form is submitted inside the click gesture through a hidden
+  // iframe, so no popup blocker and no navigation away from the panel.
+  downloadMaster(includePending) {
     this._downloadPending = !!includePending;
-    try {
-      const r = await api.fetchApi(
-        `/h3_suite/project/export_name?name=` +
-        `${encodeURIComponent(this.name())}` +
-        `&preview=${includePending ? 1 : 0}`);
-      const { suggested, error } = await r.json();
-      if (error) throw new Error(error);
-      this.downloadInput.value = suggested;
-    } catch (e) {
-      this.downloadInput.value = includePending ? "preview.mp4" : "download.mp4";
-    }
-    this.exportBtns.style.display = "none";
-    this.downloadNaming.style.display = "flex";
-    this.downloadHints.style.display = "block";
-    this.downloadInput.focus();
-    this.downloadInput.select();
-  }
-
-  closeDownloadNaming() {
-    this.downloadNaming.style.display = "none";
-    this.downloadHints.style.display = "none";
-    this.exportBtns.style.display = "flex";
-  }
-
-  async doDownload() {
-    const filename = this.downloadInput.value.trim();
-    if (!filename) return;
-    this.closeDownloadNaming();
-    toast("preparing download…");
-    try {
-      // collect metadata from the last clip in the timeline (or state)
-      let meta = {};
-      if (this.timeline && this.timeline.length) {
-        const m = this.timeline[this.timeline.length - 1].clip.meta || {};
-        meta.seed = m.seed || m.seed_head || m.seed;
-        meta.prompt_hash = m.prompt_hash || m.promptHash || m.prompt_hash;
-        meta.model = m.model || m.model_name || m.model;
-      } else if (this.state) {
-        const pend = this._downloadPending ? this.state.pending : null;
-        const src = pend || (this.state.clips && this.state.clips.slice(-1)[0]) || {};
-        const m = src.meta || {};
-        meta.seed = m.seed || m.seed_head || "";
-        meta.prompt_hash = m.prompt_hash || m.promptHash || "";
-        meta.model = m.model || m.model_name || "";
-      }
-
-      // Call export to produce an on-disk master, then open the download URL
-      const out = await post("/h3_suite/project/export", {
-        name: this.name(), include_pending: this._downloadPending,
-        filename,
-      });
-      // open the GET download which returns a FileResponse and prompts Save As
-      const url = `/h3_suite/project/download?name=${encodeURIComponent(this.name())}&filename=${encodeURIComponent(filename)}&metadata=${encodeURIComponent(JSON.stringify(meta || {}))}`;
-      window.open(url, '_blank');
-    } catch (e) {
-      toast(e.message || String(e), true);
-    }
-  }
-
-  _submitDownloadForm(payload) {
-    const form = document.createElement('form');
-    form.method = 'POST';
-    form.action = '/h3_suite/project/download_stream';
-    form.target = '_blank';
-    form.style.display = 'none';
+    const payload = {
+      name: this.name(),
+      filename: this._prefix(),
+      include_pending: includePending ? "1" : "0",
+      level_match: "1",
+      metadata: JSON.stringify(this._downloadMetadata()),
+    };
+    const path = "/h3_suite/project/download_stream";
+    const form = document.createElement("form");
+    form.method = "POST";
+    form.action = api.apiURL ? api.apiURL(path) : path;
+    form.target = this._downloadTarget();
+    form.style.display = "none";
     for (const k of Object.keys(payload)) {
-      const inp = document.createElement('input');
-      inp.type = 'hidden';
+      const inp = document.createElement("input");
+      inp.type = "hidden";
       inp.name = k;
-      inp.value = String(payload[k] == null ? '' : payload[k]);
+      inp.value = String(payload[k] == null ? "" : payload[k]);
       form.appendChild(inp);
     }
-    document.body.appendChild(form);
+    document.body.append(form);
     form.submit();
     form.remove();
+    toast("merging and downloading…");
   }
 
-  async _startDownloadWithTemplate(template) {
-    const filename = template || "download.mp4";
-    try {
-      // collect metadata from the last clip in the timeline (or state)
-      let meta = {};
-      if (this.timeline && this.timeline.length) {
-        const m = this.timeline[this.timeline.length - 1].clip.meta || {};
-        meta.seed = m.seed || m.seed_head || "";
-        meta.prompt_hash = m.prompt_hash || m.promptHash || "";
-        meta.model = m.model || m.model_name || "";
-      } else if (this.state) {
-        const pend = this._downloadPending ? this.state.pending : null;
-        const src = pend || (this.state.clips && this.state.clips.slice(-1)[0]) || {};
-        const m = src.meta || {};
-        meta.seed = m.seed || m.seed_head || "";
-        meta.prompt_hash = m.prompt_hash || m.promptHash || "";
-        meta.model = m.model || m.model_name || "";
-      }
-
-      // Call export to create a temporary master file on disk first
-      const out = await post("/h3_suite/project/export", {
-        name: this.name(), include_pending: this._downloadPending,
-        filename,
-      });
-      const exported = out && out.master ? out.master.split('/').pop() : filename;
-      const url = `/h3_suite/project/download?name=${encodeURIComponent(this.name())}&filename=${encodeURIComponent(exported)}&metadata=${encodeURIComponent(JSON.stringify(meta || {}))}`;
-      window.open(url, '_blank');
-    } catch (e) {
-      toast(e.message || String(e), true);
+  // Metadata the panel has but the server cannot guess. Computed
+  // synchronously: the form has to be submitted inside the click gesture
+  // or the browser treats the download as a popup and blocks it.
+  _downloadMetadata() {
+    let src = null;
+    if (this.timeline && this.timeline.length) {
+      src = this.timeline[this.timeline.length - 1].clip;
+    } else if (this.state) {
+      src = (this._downloadPending && this.state.pending)
+        || (this.state.clips && this.state.clips.slice(-1)[0]);
     }
+    const m = (src && src.meta) || {};
+    return {
+      seed: m.seed || m.seed_head || "",
+      prompt_hash: m.prompt_hash || m.promptHash || "",
+      model: m.model || m.model_name || "",
+    };
+  }
+
+  // A hidden iframe is the form target: the download starts without a
+  // popup blocker getting in the way and without leaving the panel.
+  _downloadTarget() {
+    if (!this._dlFrame || !this._dlFrame.isConnected) {
+      this._dlFrame = el("iframe", { name: "h3p_dl_target",
+                                     style: "display:none" });
+      document.body.append(this._dlFrame);
+    }
+    return "h3p_dl_target";
   }
 
   async mergeAndSave() {
     // Merge approved clips only and export to a file, then mirror to output
-    const prefixEl = this.exportBtns.querySelector('.h3p-prefix');
-    const prefix = (prefixEl && prefixEl.value.trim()) || null;
+    toast("concatenating\u2026");
     try {
-      const r = await api.fetchApi(
-        `/h3_suite/project/export_name?name=` +
-        `${encodeURIComponent(this.name())}` +
-        `&preview=0`);
-      const data = await r.json();
-      let suggested = data.suggested;
-      if (prefix) {
-        // use prefix and let backend pick a unique name
-        suggested = prefix;
-      }
-      // request export to create master on disk
-      const out = await post("/h3_suite/project/export", { name: this.name(), include_pending: false, filename: suggested });
-      const exported = out && out.master ? out.master.split('/').pop() : suggested;
-      // mirror into output
-      const mirror = await post("/h3_suite/project/mirror_output", { name: this.name(), filename: exported });
+      const out = await post("/h3_suite/project/export", {
+        name: this.name(), include_pending: false,
+        filename: this._prefix(),
+      });
+      const exported = out.master.split(/[\\/]/).pop();
+      const mirror = await post("/h3_suite/project/mirror_output",
+                                { name: this.name(), filename: exported });
       if (mirror && mirror.ui && mirror.ui.video && mirror.ui.video[0]) {
         const f = mirror.ui.video[0].filename;
+        // no window.open here: it fires after an await, so popup blockers
+        // eat it. The file is in ComfyUI's output folder; say where.
         toast(`saved to output: ${f}`);
-        // open the Output file URL in a new tab for convenience
-        const outUrl = `/view?filename=${encodeURIComponent(f)}&type=output`;
-        window.open(outUrl, '_blank');
       } else {
         toast('mirrored to output');
       }
@@ -1581,7 +1458,6 @@ class ProjectModal extends ChainTimeline {
   setMode(mode) {
     this.mode = mode;
     this.viewing = null;
-    this.closeExportNaming();
     this.curSeg = null;
     this.standbySeg = null;
     for (const v of [this.vA, this.vB]) {

@@ -1,5 +1,53 @@
 # Changelog
 
+## 1.3.1
+
+### One filename_prefix, used by every button
+
+The field is ComfyUI's `filename_prefix`, so it behaves like the one on
+SaveImage: the placeholders expand, a run counter and `.mp4` are appended,
+and the first free number wins, so two exports never overwrite each other.
+`%date%`, `%time%`, `%timestamp%`, `%project%`, `%clips%`, `%hash%`,
+`%seed%`, `%prompt_hash%` work, plus the tokens ComfyUI's own save nodes
+expand (`%year%`, `%month%`, `%day%`, `%hour%`, `%minute%`, `%second%`,
+`%width%`, `%height%`). A leftover placeholder is stripped rather than
+leaking a stray `%`, and non-ASCII names survive instead of collapsing to
+the fallback.
+
+Export master, Export + pending, Merge & Save and Download to browser all
+read that one field at click time and run immediately. The "save as" row
+they used to pop up is gone - it asked for the same name a second time,
+and typing a prefix there produced `prefix.mp4` instead of
+`prefix_00001.mp4`.
+
+### Download to browser streams instead of exporting first
+
+The template used to be expanded twice: once by `/export` (without
+metadata, at one instant) and again by the `/download` GET (with the real
+metadata, a second or two later). `%time%` on its own was enough to make
+the two names disagree, so the browser asked for a file that had just been
+written under a slightly different name and got a 404. A plain prefix was
+worse: export added a suffix on a collision while the download asked for
+the unsuffixed name, so you silently received the previous master.
+
+Downloads now go through one request. `download_stream` merges the chain
+and streams it straight to the browser, naming it once, in the same call
+that produces the bytes - nothing is written to the project folder, which
+is the only sane behaviour on a temporary volume. The panel submits that
+request from a hidden iframe inside the click gesture, so popup blockers
+have nothing to block.
+
+### The stream no longer stalls the server
+
+`download_stream` read ffmpeg's stdout with a blocking call on the event
+loop and left stderr undrained, so a full stderr pipe could hang the
+download while the blocking read stalled every other request ComfyUI was
+serving. It now uses an asyncio subprocess, drains stderr in the
+background, encodes quietly (`-nostats -loglevel error`), keeps its
+scratch files in a per-download temp dir, sends a proper RFC 5987
+`Content-Disposition`, and reports a failed encode as JSON instead of a
+zero-length mp4 with a 200.
+
 ## 1.3.0
 
 ### Registry

@@ -255,7 +255,9 @@ def _register():
         """A plain .mp4 filename inside the project root, never a path."""
         import re as _re
         name = os.path.basename((raw or "").strip())
-        name = _re.sub(r"[^A-Za-z0-9 ._-]", "", name)
+        # keep letters in any script; drop separators and any stray % left
+        # behind by a mistyped placeholder
+        name = _re.sub(r"[^\w .-]", "", name, flags=_re.UNICODE)
         if name.lower().endswith(".mp4"):
             name = name[:-4]
         name = name.strip(" .")
@@ -263,22 +265,13 @@ def _register():
             name = fallback
         return name + ".mp4"
 
-    def _suggest_export(p, preview):
-        """First free name: base.mp4, then base_002.mp4, base_003.mp4..."""
-        base = "%s_%s" % (p.name, "preview" if preview else "master")
-        if not os.path.exists(os.path.join(p.root, base + ".mp4")):
-            return base + ".mp4"
-        n = 2
-        while os.path.exists(os.path.join(p.root, "%s_%03d.mp4" % (base, n))):
-            n += 1
-        return "%s_%03d.mp4" % (base, n)
-
     def _process_placeholders(filename, metadata=None):
-        """Expand ComfyUI Save File Formatting placeholders.
+        """Expand Save-File-Formatting style placeholders in a filename.
         
-        Supports: %date%, %time%, %seed%, %prompt_hash%, %counter%, etc.
+        Only placeholders the project can actually fill are listed. A
+        leftover one is stripped afterwards by _safe_export_name, so a typo
+        shows up as a missing word, never as a stray %.
         """
-        import re as _re
         from datetime import datetime
         
         if not filename:
@@ -286,23 +279,25 @@ def _register():
             
         metadata = metadata or {}
         now = datetime.now()
-        
-        # Counter - simple incrementer if filename exists
-        counter = 1
-        counter_pattern = r'%counter%'
-        if _re.search(counter_pattern, filename):
-            # Count how many similar files exist
-            base = _re.sub(counter_pattern, r'(\d+)', filename)
-            counter = 1
-            # This is simplified; ComfyUI maintains a global counter
-        
+
         replacements = {
             '%date%': now.strftime("%Y%m%d"),
             '%time%': now.strftime("%H%M%S"),
             '%timestamp%': now.strftime("%Y%m%d_%H%M%S"),
-            '%seed%': str(metadata.get('seed', '0')),
+            # the tokens ComfyUI's own save nodes expand
+            '%year%': now.strftime("%Y"),
+            '%month%': now.strftime("%m"),
+            '%day%': now.strftime("%d"),
+            '%hour%': now.strftime("%H"),
+            '%minute%': now.strftime("%M"),
+            '%second%': now.strftime("%S"),
+            '%width%': str(metadata.get('width', '')),
+            '%height%': str(metadata.get('height', '')),
+            '%project%': str(metadata.get('project', '')),
+            '%clips%': str(metadata.get('clips', '')),
+            '%hash%': str(metadata.get('hash', '')),
+            '%seed%': str(metadata.get('seed', '')),
             '%prompt_hash%': str(metadata.get('prompt_hash', '')),
-            '%counter%': f'{counter:05d}',
             '%model%': str(metadata.get('model', '')),
         }
         
@@ -313,6 +308,64 @@ def _register():
         
         return result
 
+    def _attachment(filename):
+        """Content-Disposition that survives spaces and non-ASCII names."""
+        from urllib.parse import quote
+        plain = (filename.encode("ascii", "replace").decode("ascii")
+                 .replace('"', "_").replace("\\", "_"))
+        return ("attachment; filename=\"%s\"; filename*=UTF-8''%s"
+                % (plain, quote(filename, safe="")))
+
+    def _prefix_name(p, raw, metadata, preview=False):
+        """ComfyUI filename_prefix rules applied to a merged master.
+
+        The field is a PREFIX, not a filename: a run counter is appended
+        and the first free number wins, so two exports never overwrite
+        each other. That is what folder_paths.get_save_image_path does
+        for SaveImage, and what the field's name promises here.
+        """
+        fallback = "%s_%s" % (p.name, "preview" if preview else "master")
+        base = _process_placeholders((raw or "").strip(), metadata)
+        stem = _safe_export_name(base, fallback)[:-4]
+        n = 1
+        while os.path.exists(os.path.join(p.root,
+                                          "%s_%05d.mp4" % (stem, n))):
+            n += 1
+        return "%s_%05d.mp4" % (stem, n)
+
+    def _merge_metadata(p, clips, supplied=None):
+        """Placeholder facts the project can prove, without the panel.
+
+        Clip meta carries frame facts only (no seed, no prompt hash), so
+        those come from the sidecar prompt here rather than being expanded
+        to an empty string and silently mangling the filename.
+        """
+        import hashlib
+        import json as _json
+        meta = dict(supplied) if isinstance(supplied, dict) else {}
+        meta["project"] = p.name
+        meta["clips"] = len(clips)
+        digest = hashlib.sha1()
+        for clip in clips:
+            digest.update(str(clip.get("basename") or "").encode("utf-8"))
+        meta["hash"] = digest.hexdigest()[:8]
+        if clips:
+            last_meta = clips[-1].get("meta") or {}
+            meta["width"] = last_meta.get("width", "")
+            meta["height"] = last_meta.get("height", "")
+        if clips and not meta.get("prompt_hash"):
+            side = os.path.join(p.clips_dir, clips[-1]["basename"] + ".json")
+            try:
+                with open(side, "r", encoding="utf-8") as fh:
+                    prompt = _json.load(fh).get("prompt")
+                meta["prompt_hash"] = hashlib.sha1(
+                    _json.dumps(prompt, sort_keys=True,
+                                separators=(",", ":")).encode("utf-8")
+                ).hexdigest()[:8]
+            except Exception:
+                pass
+        return meta
+
     @routes.get("/h3_suite/project/export_name")
     async def export_name(request):
         try:
@@ -320,7 +373,9 @@ def _register():
         except ProjectError as exc:
             return web.json_response({"error": str(exc)}, status=404)
         preview = request.rel_url.query.get("preview") in ("1", "true")
-        return web.json_response({"suggested": _suggest_export(p, preview)})
+        # what the prefix field yields when left empty
+        return web.json_response({"suggested": _prefix_name(p, None, {},
+                                                            preview)})
 
     @routes.post("/h3_suite/project/select_take")
     @_json_post
@@ -454,7 +509,9 @@ def _register():
         with open(list_path, "w", encoding="utf-8") as fh:
             for path in paths:
                 fh.write("file '%s'\n" % path.replace("'", "'\\''"))
-        # Expand placeholders if present and support unique prefix naming
+        # placeholder facts come from disk first (project name, clip count,
+        # digest, prompt hash): the panel cannot know them, and an
+        # unexpanded placeholder used to leak a stray % into the name
         metadata = body.get("metadata", {})
         if isinstance(metadata, str):
             try:
@@ -462,30 +519,9 @@ def _register():
                 metadata = _json.loads(metadata)
             except Exception:
                 metadata = {}
+        metadata = _merge_metadata(p, clips, metadata)
 
-        raw_name = (body.get("filename") or "").strip()
-        if raw_name:
-            # If template-like placeholders are present, expand them
-            if "%" in raw_name:
-                expanded = _process_placeholders(raw_name, metadata)
-                default = _suggest_export(p, preview)[:-4]
-                fname = _safe_export_name(expanded, default)
-            else:
-                # Treat as prefix: generate unique name base_001.mp4 style
-                base = _safe_export_name(raw_name, _suggest_export(p, preview)[:-4])[:-4]
-                candidate = base + ".mp4"
-                if not os.path.exists(os.path.join(p.root, candidate)):
-                    fname = candidate
-                else:
-                    n = 2
-                    while os.path.exists(os.path.join(p.root, f"{base}_{n:03d}.mp4")):
-                        n += 1
-                    fname = f"{base}_{n:03d}.mp4"
-        else:
-            # no explicit name means the first FREE name, never a silent
-            # overwrite of a master someone already kept
-            default = _suggest_export(p, preview)[:-4]
-            fname = _safe_export_name(None, default)
+        fname = _prefix_name(p, body.get("filename"), metadata, preview)
         master = os.path.join(p.root, fname)
         real = os.path.realpath(master)
         if os.path.dirname(real) != os.path.realpath(p.root):
@@ -560,11 +596,12 @@ def _register():
         POST body:
         - name: project name
         - include_pending: whether to include pending clip (default false)
-        - filename: the download filename for browser (supports placeholders)
+        - filename: ComfyUI filename_prefix - placeholders expand and a run
+          counter plus .mp4 are appended
         - metadata: dict with seed, prompt_hash, model for placeholder expansion
         """
+        import asyncio
         import shutil
-        import subprocess
         import tempfile
         import folder_paths as fp
         
@@ -585,7 +622,8 @@ def _register():
             return web.json_response({"error": str(exc)}, status=404)
         
         clips = list(p.approved())
-        preview = bool(body.get("include_pending")) and p.pending()
+        preview = (str(body.get("include_pending", "0")).lower()
+                   in ("1", "true", "yes", "on")) and p.pending()
         if preview:
             clips.append(p.pending())
         
@@ -613,13 +651,17 @@ def _register():
         matched = []
         paths = [p.clip_video_path(c["basename"]) for c in clips]
         
-        if body.get("level_match", True):
+        # form posts arrive as strings, so "0"/"false" must not read as on
+        if str(body.get("level_match", "1")).lower() not in (
+                "0", "false", "no", "off"):
             flagged = [i for i, c in enumerate(clips)
                        if i > 0 and c.get("level_match")]
             if flagged:
                 from .level_match import correct
-                tmp_dir = os.path.join(p.root, ".levelmatch_download")
-                os.makedirs(tmp_dir, exist_ok=True)
+                # throwaway dir, never inside the project: two tabs must not
+                # overwrite each other's level-matched clips, and the project
+                # folder may be ephemeral (Modal)
+                tmp_dir = tempfile.mkdtemp(prefix="h3s_dl_")
                 for i in flagged:
                     dst = os.path.join(tmp_dir,
                                        clips[i]["basename"] + ".mp4")
@@ -633,8 +675,12 @@ def _register():
                         paths[i] = dst
                         matched.append(clips[i]["index"])
         
-        # Build concat list
-        list_path = os.path.join(p.root, ".concat_download.txt")
+        # Build concat list in a throwaway dir: nothing of ours is written
+        # into the project folder (ephemeral on Modal), and two concurrent
+        # downloads cannot collide on the same list path
+        if tmp_dir is None:
+            tmp_dir = tempfile.mkdtemp(prefix="h3s_dl_")
+        list_path = os.path.join(tmp_dir, "concat.txt")
         try:
             with open(list_path, "w", encoding="utf-8") as fh:
                 for path in paths:
@@ -649,9 +695,9 @@ def _register():
                     metadata = _json.loads(metadata)
                 except Exception:
                     metadata = {}
-            filename = _process_placeholders(body.get("filename", "download.mp4"),
-                                            metadata)
-            filename = _safe_export_name(filename, "download")
+            metadata = _merge_metadata(p, clips, metadata)
+            filename = _prefix_name(p, body.get("filename"), metadata,
+                                    preview)
             
             # Stream directly to response via pipe
             # Build metadata args for ffmpeg (-metadata key=value)
@@ -669,40 +715,61 @@ def _register():
             except Exception:
                 pass
 
+            quiet = ["-nostats", "-loglevel", "error"]
             if matched:
                 cmd = [ffmpeg, "-y", "-f", "concat", "-safe", "0", "-i",
                        list_path, "-c:v", "libx264", "-crf", "17",
                        "-pix_fmt", "yuv420p", "-c:a", "aac",
-                       "-movflags", "+faststart+use_metadata_tags"] + meta_args + ["-"]
+                       "-movflags", "+faststart+use_metadata_tags"] + meta_args + quiet + ["-"]
             else:
                 cmd = [ffmpeg, "-y", "-f", "concat", "-safe", "0", "-i",
-                       list_path, "-c", "copy", "-movflags", "+faststart+use_metadata_tags"] + meta_args + ["-"]
+                       list_path, "-c", "copy", "-movflags", "+faststart+use_metadata_tags"] + meta_args + quiet + ["-"]
             
-            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
-                                   stderr=subprocess.PIPE)
+            proc = await asyncio.create_subprocess_exec(
+                *cmd, stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE)
+            # ffmpeg blocks forever once its stderr pipe fills, so drain it
+            # in the background and keep the text for the error path
+            err_task = asyncio.ensure_future(proc.stderr.read())
             
+            # a broken encode must surface as JSON, not as a zero-byte 200
+            # that the browser cheerfully saves
+            first = await proc.stdout.read(65536)
+            if not first:
+                stderr = (await err_task).decode("utf-8", "replace")
+                return web.json_response(
+                    {"error": "h3_suite: ffmpeg concat failed: %s"
+                              % (stderr.strip()[-400:] or "no output")},
+                    status=500)
+
             response = web.StreamResponse(
                 status=200,
                 headers={
                     "Content-Type": "video/mp4",
-                    "Content-Disposition": f"attachment; filename={filename}"
+                    "Content-Disposition": _attachment(filename),
+                    "Cache-Control": "no-store",
+                    "X-Content-Type-Options": "nosniff",
                 })
             await response.prepare(request)
             
             # Stream chunks from ffmpeg
             try:
-                while True:
-                    chunk = proc.stdout.read(65536)  # 64KB chunks
-                    if not chunk:
-                        break
+                chunk = first
+                while chunk:
                     await response.write(chunk)
-            except Exception as exc:
-                _LOG.error("h3_suite: streaming error: %s", exc)
+                    chunk = await proc.stdout.read(65536)
+            except (ConnectionResetError, asyncio.CancelledError):
+                _LOG.info("h3_suite: client aborted download of %s", filename)
+                return response
             finally:
-                proc.stdout.close()
-                if proc.poll() is None:
-                    proc.terminate()
-                    proc.wait(timeout=2)
+                if proc.returncode is None:
+                    try:
+                        proc.kill()
+                    except ProcessLookupError:
+                        pass
+                await proc.wait()
+                if not err_task.done():
+                    err_task.cancel()
             
             await response.write_eof()
             return response
@@ -756,12 +823,19 @@ def _register():
         # Expand ComfyUI Save File Formatting placeholders
         expanded_filename = _process_placeholders(filename, metadata)
         
-        # Security: ensure filename stays in project root, no path traversal
-        target = os.path.join(p.root, os.path.basename(expanded_filename))
-        real = os.path.realpath(target)
-        if os.path.dirname(real) != os.path.realpath(p.root):
-            return web.json_response(
-                {"error": "access denied"}, status=403)
+        # Security: ensure filename stays in project root, no path traversal;
+        # an exact basename that exists is served as-is, so a template is
+        # only expanded once, by whoever produced it
+        root = os.path.realpath(p.root)
+        real = None
+        for cand in (os.path.basename(filename),
+                     os.path.basename(expanded_filename)):
+            target = os.path.realpath(os.path.join(p.root, cand))
+            if os.path.dirname(target) == root and os.path.isfile(target):
+                real = target
+                break
+        if real is None:
+            return web.json_response({"error": "file not found"}, status=404)
         
         if not os.path.isfile(real):
             return web.json_response(
@@ -770,10 +844,8 @@ def _register():
         # Serve the file with appropriate headers for browser download
         return web.FileResponse(
             real,
-            headers={
-                "Content-Disposition": 
-                    f"attachment; filename={os.path.basename(real)}"
-            })
+            headers={"Content-Disposition":
+                     _attachment(os.path.basename(real))})
 
     @routes.post("/h3_suite/project/mirror_output")
     @_json_post
