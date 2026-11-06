@@ -595,7 +595,8 @@ def _register():
         and is deleted with the response - which is what makes this usable
         on a deployment whose output folder the user cannot reach.
         
-        POST body:
+        POST a JSON body (multipart/form-data is not parsed by this route on
+        older aiohttp builds, where every field would arrive empty):
         - name: project name
         - include_pending: whether to include pending clip (default false)
         - filename: ComfyUI filename_prefix - placeholders expand and a run
@@ -610,16 +611,26 @@ def _register():
         try:
             body = await request.json()
         except Exception:
-            # Accept form-encoded POSTs from browser form submissions
+            # Accept form-encoded POSTs too, but note that request.post()
+            # cannot see multipart fields on older aiohttp versions, so a
+            # multipart caller arrives here with an empty dict. Say that
+            # plainly instead of failing later as "project name ''".
             try:
                 post = await request.post()
-                # convert multidict to plain dict
                 body = {k: post.get(k) for k in post}
             except Exception:
                 body = {}
-        
+
+        project_name = (body.get("name") or "").strip()
+        if not project_name:
+            return web.json_response(
+                {"error": "h3_suite: project name missing from the request. "
+                          "POST JSON {name, filename, metadata} - "
+                          "multipart/form-data is not parsed by this route."},
+                status=400)
+
         try:
-            p = Project(fp.get_output_directory(), body.get("name"))
+            p = Project(fp.get_output_directory(), project_name)
         except ProjectError as exc:
             return web.json_response({"error": str(exc)}, status=404)
         

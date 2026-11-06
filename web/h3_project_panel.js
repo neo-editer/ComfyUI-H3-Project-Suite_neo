@@ -1261,11 +1261,13 @@ class ProjectModal extends ChainTimeline {
     const note = el("div", { class: "h3p-toast", text: "merging\u2026" });
     document.body.append(note);
     try {
-      const form = new FormData();
-      for (const k of Object.keys(payload)) {
-        form.append(k, String(payload[k] == null ? "" : payload[k]));
-      }
-      const res = await fetch(url, { method: "POST", body: form });
+      // JSON, not FormData: multipart fields are invisible to the route on
+      // older aiohttp builds, which is how every field arrived empty
+      const res = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
       const type = res.headers.get("Content-Type") || "";
       if (!res.ok || type.includes("application/json")) {
         let msg = `${res.status} ${res.statusText}`;

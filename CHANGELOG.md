@@ -32,6 +32,13 @@ progress readout. The panel fetches the response and saves it through an
 anchor, so a server-side failure arrives as an error toast instead of
 vanishing into a hidden iframe.
 
+The panel also posts JSON to `download_stream` now. It used
+`multipart/form-data`, and on the aiohttp builds ComfyUI ships,
+`request.post()` cannot see multipart fields at all - every value arrived
+empty and the request died as `project name '' is not allowed`. If a body
+does arrive without a name, the route says so instead of quoting the name
+validator.
+
 ### Download to browser streams instead of exporting first
 
 The template used to be expanded twice: once by `/export` (without
